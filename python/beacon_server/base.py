@@ -63,7 +63,6 @@ from lib.packet.pcb import (
     PCBMarking,
 )
 from lib.packet.scion_addr import ISD_AS
-from lib.packet.svc import SVCType
 from lib.packet.scmp.types import SCMPClass, SCMPPathClass
 from lib.path_store import PathPolicy
 from lib.thread import thread_safety_net, kill_self
@@ -208,15 +207,7 @@ class BeaconServer(SCIONElement, metaclass=ABCMeta):
         return propagated_pcbs
 
     def _mk_prop_pcb_meta(self, pcb, dst_ia, egress_if):
-        ts = pcb.get_timestamp()
-        asm = self._create_asm(pcb.p.ifID, egress_if, ts, pcb.last_hof())
-        if not asm:
-            return None, None
-        pcb.add_asm(asm)
-        pcb.sign(self.signing_key)
-        one_hop_path = self._create_one_hop_path(egress_if)
-        return pcb, self._build_meta(ia=dst_ia, host=SVCType.BS_A,
-                                     path=one_hop_path, one_hop=True)
+        raise NotImplementedError
 
     def _create_one_hop_path(self, egress_if):
         ts = int(SCIONTime.get_time())
@@ -270,6 +261,7 @@ class BeaconServer(SCIONElement, metaclass=ABCMeta):
         """
         Handles pcbs received from the network.
         """
+        logging.debug('')
         if meta:
             pcb.p.ifID = meta.path.get_hof().ingress_if
         try:
@@ -301,19 +293,26 @@ class BeaconServer(SCIONElement, metaclass=ABCMeta):
             except ZkNoConnection:
                 logging.error("Unable to store PCB in shared cache: "
                               "no connection to ZK")
-        self.handle_ext(pcb)
+        self.handle_ext(seg_meta)
+        if seg_meta.to_be_dropped:
+            # The PCB contained an announcement from an unknown ISD, hence it is dropped
+            logging.info('Dropping an invalid PCB.')
+            return
         self._handle_verified_beacon(pcb)
 
     def _filter_pcb(self, pcb, dst_ia=None):
         return True
 
-    def handle_ext(self, pcb):
+    def handle_ext(self, seg_meta):
         """
         Handle beacon extensions.
         """
         # Handle PCB extensions
+        pcb = seg_meta.seg
         if pcb.is_sibra():
             logging.debug("%s", pcb.sibra_ext)
+        for ann in pcb.asm(0).isd_announcement_exts_iter():
+            self.handle_isd_announcement_ext(seg_meta, ann, pcb.first_ia()[0])
         for asm in pcb.iter_asms():
             pol = asm.routing_pol_ext()
             if pol:
@@ -322,6 +321,13 @@ class BeaconServer(SCIONElement, metaclass=ABCMeta):
     def handle_routing_pol_ext(self, ext):
         # TODO(Sezer): Implement routing policy extension handling
         logging.debug("Routing policy extension: %s" % ext)
+
+    def handle_isd_announcement_ext(self, seg_meta, ext, announcing_isd):
+        """
+        Uses the coordinator to handle the announcement iff there
+        is a TRC included and self is a core beacon server
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def register_segments(self):
@@ -387,6 +393,7 @@ class BeaconServer(SCIONElement, metaclass=ABCMeta):
         to 0, i.e., there is no AS to forward a packet containing this path
         segment to.
         """
+
         pcb = pcb.copy()
         asm = self._create_asm(pcb.p.ifID, 0, pcb.get_timestamp(),
                                pcb.last_hof())

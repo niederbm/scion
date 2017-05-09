@@ -12,4 +12,13 @@ struct RoutingPolicyExt{
 
 struct ISDAnnouncementExt{
     set @0 :Bool;   # TODO(Sezer): Implement announcement extension
+    hashAlg @1 :UInt8; # Algorithm used for hashing
+    hashValue @2 :Data;
+    trc @3 :Data; # The newcomer TRC
+    currentlyRejected @4 :Bool; # Stores wehter or not the currently handling BS rejected this announcement
+}
+
+struct AnnouncementRejectedExt{
+    set @0 :Bool;
+    indices @1 :List(UInt32);
 }

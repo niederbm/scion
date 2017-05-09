@@ -78,6 +78,8 @@ class ExtEndToEndType(TypeBase):
 
 class ASMExtType(TypeBase):
     ROUTING_POLICY = 0
+    ISD_ANNOUNCEMENT = 1
+    ANNOUNCEMENT_REJECTED = 2
 
 
 class RoutingPolType(TypeBase):

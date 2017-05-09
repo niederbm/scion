@@ -23,6 +23,7 @@ from collections import defaultdict
 from beacon_server.base import BeaconServer
 from lib.defines import PATH_SERVICE, SIBRA_SERVICE
 from lib.errors import SCIONServiceLookupError
+from lib.packet.cert_mgmt import TRCReply
 from lib.packet.path_mgmt.seg_recs import PathRecordsReg
 from lib.packet.svc import SVCType
 from lib.path_store import PathStore
@@ -103,6 +104,17 @@ class LocalBeaconServer(BeaconServer):
             self.up_segments.add_segment(pcb)
             self.down_segments.add_segment(pcb)
 
+    def _mk_prop_pcb_meta(self, pcb, dst_ia, egress_if):
+        ts = pcb.get_timestamp()
+        asm = self._create_asm(pcb.p.ifID, egress_if, ts, pcb.last_hof())
+        if not asm:
+            return None, None
+        pcb.add_asm(asm)
+        pcb.sign(self.signing_key)
+        one_hop_path = self._create_one_hop_path(egress_if)
+        return pcb, self._build_meta(ia=dst_ia, host=SVCType.BS_A,
+                                     path=one_hop_path, one_hop=True)
+
     def handle_pcbs_propagation(self):
         """
         Main loop to propagate received beacons.
@@ -117,6 +129,25 @@ class LocalBeaconServer(BeaconServer):
                 propagated_pcbs[k].extend(v)
         self._log_propagations(propagated_pcbs)
 
+    def handle_isd_announcement_ext(self, seg_meta, ext, announcing_isd):
+        """
+        Uses the coordinator to handle the announcement iff there
+        is a TRC included and self is a core beacon server
+        """
+        if ext.trc is None:
+            logging.warning('Received announcement extension without TRC.')
+            return
+        else:
+            if ext.trc.quarantine:
+                logging.info('Handled an early announcement')
+            else:
+                if ext.trc.isd in [trc.isd for trc in self.trust_store.get_trcs()]:
+                    return
+                logging.info('Adding ISD%i' % ext.trc.isd)
+                meta = self._get_cs()
+                self.send_meta(TRCReply.from_values(ext.trc), meta)
+                self.trust_store.add_trc(ext.trc, True)
+
     def register_up_segments(self):
         """
         Register the paths to the core.
@@ -128,6 +159,7 @@ class LocalBeaconServer(BeaconServer):
             new_pcb = self._terminate_pcb(pcb)
             if not new_pcb:
                 continue
+
             new_pcb.sign(self.signing_key)
             for svc_type in [PATH_SERVICE, SIBRA_SERVICE]:
                 try:

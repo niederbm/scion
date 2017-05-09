@@ -57,6 +57,10 @@ IFIDS_FILE = "ifids.yml"
 AS_LIST_FILE = "as_list.yml"
 #: Prometheus config
 PROM_FILE = "prometheus.yml"
+#: ISD coordination config
+ISD_COORDINATION_CONFIG = "coordinator.config"
+#: New announcements directory
+NEW_ANNOUNCEMENTS_PATH = "announcements"
 
 #: Buffer size for receiving packets
 SCION_BUFLEN = 65535

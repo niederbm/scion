@@ -313,6 +313,7 @@ class SCIONElement(object):
                 handler(meta.pkt)
             else:
                 handler(msg, meta)
+
         except SCIONBaseError:
             log_exception("Error handling message:\n%s" % msg)
 
@@ -414,6 +415,7 @@ class SCIONElement(object):
         Lookup certificate servers address and return meta.
         """
         try:
+            logging.debug('Mattias_Cert: in try')
             addr, port = self.dns_query_topo(CERTIFICATE_SERVICE)[0]
         except SCIONServiceLookupError as e:
             logging.warning("Lookup for certificate service failed: %s", e)
@@ -640,15 +642,22 @@ class SCIONElement(object):
         """
         Signature verification for all AS markings within this pcb/path segment.
         This function is called, when all TRCs and CCs used within this pcb/path
-        segment are available.
+        segment are available. ASMs containing an announcement are stripped of the
+        TRC, as it is not included in the signature calculation.
         """
         seg = seg_meta.seg
         ver_seg = PathSegment.from_values(seg.info)
         for asm in seg.iter_asms():
+            # Since the TRC in extension announcements isn't incorporated in the signature, the TRC
+            # must  not be present in the ASMarking when checking the signature
+            asm_no_trc = copy.deepcopy(asm)
+            for ann_ext in asm_no_trc.isd_announcement_exts_iter():
+                ann_ext.remove_trc()
+
             cert_ia = asm.isd_as()
             trc = self.trust_store.get_trc(cert_ia[0], asm.p.trcVer)
             chain = self.trust_store.get_cert(asm.isd_as(), asm.p.certVer)
-            ver_seg.add_asm(asm)
+            ver_seg.add_asm(asm_no_trc)
             verify_sig_chain_trc(ver_seg.sig_pack3(), asm.p.sig, cert_ia, chain, trc)
 
     def _get_handler(self, pkt):

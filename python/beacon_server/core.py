@@ -21,11 +21,13 @@ from collections import defaultdict
 
 # SCION
 from beacon_server.base import BeaconServer, BEACONS_PROPAGATED
+from beacon_server.coordinator import ISDCoordinator
 from lib.defines import PATH_SERVICE, SIBRA_SERVICE
 from lib.errors import SCIONServiceLookupError
 from lib.packet.opaque_field import InfoOpaqueField
 from lib.packet.path_mgmt.seg_recs import PathRecordsReg
 from lib.packet.pcb import PathSegment
+from lib.packet.svc import SVCType
 from lib.path_store import PathStore
 from lib.types import PathSegmentType as PST
 from lib.util import SCIONTime
@@ -48,6 +50,8 @@ class CoreBeaconServer(BeaconServer):
         # Sanity check that we should indeed be a core beacon server.
         assert self.topology.is_core_as, "This shouldn't be a local BS!"
         self.core_beacons = defaultdict(self._ps_factory)
+        self.coordinator = ISDCoordinator(conf_dir, self.trust_store, self._get_cs, self.send_meta,
+                                          self.topology.isd_as, self.config.propagation_time)
 
     def _ps_factory(self):
         """
@@ -56,6 +60,27 @@ class CoreBeaconServer(BeaconServer):
         :rtype:
         """
         return PathStore(self.path_policy)
+
+    def _mk_prop_pcb_meta(self, pcb, dst_ia, egress_if, core=False):
+        ts = pcb.get_timestamp()
+        asm = self._create_asm(pcb.p.ifID, egress_if, ts, pcb.last_hof())
+        if not asm:
+            return None, None
+        if len(pcb.p.asms) == 0:
+            if core:
+                self.coordinator.add_announcement_core(asm)
+            else:
+                self.coordinator.add_announcement_downstream(asm)
+        else:
+            self.coordinator.add_announcement_rejection(pcb, asm)
+        self.coordinator.unresolved_final_announcements.check_conflicts()
+
+        pcb.add_asm(asm)
+        pcb.sign(self.signing_key)
+
+        one_hop_path = self._create_one_hop_path(egress_if)
+        return pcb, self._build_meta(ia=dst_ia, host=SVCType.BS_A,
+                                     path=one_hop_path, one_hop=True)
 
     def propagate_core_pcb(self, pcb):
         """
@@ -68,7 +93,7 @@ class CoreBeaconServer(BeaconServer):
             if not self._filter_pcb(pcb, dst_ia=dst_ia):
                 continue
             new_pcb, meta = self._mk_prop_pcb_meta(
-                pcb.copy(), intf.isd_as, intf.if_id)
+                pcb.copy(), intf.isd_as, intf.if_id, True)
             if not new_pcb:
                 continue
             self.send_meta(new_pcb, meta)
@@ -93,6 +118,7 @@ class CoreBeaconServer(BeaconServer):
         propagated = self.propagate_core_pcb(core_pcb)
         for k, v in propagated.items():
             propagated_pcbs[k].extend(v)
+
         # Propagate received beacons. A core beacon server can only receive
         # beacons from other core beacon servers.
         beacons = []
@@ -104,6 +130,68 @@ class CoreBeaconServer(BeaconServer):
             for k, v in propagated.items():
                 propagated_pcbs[k].extend(v)
         self._log_propagations(propagated_pcbs)
+
+    def handle_isd_announcement_ext(self, seg_meta, ext, announcing_isd):
+        """
+        Uses the coordinator to handle the announcement iff there
+        is a TRC included and self is a core beacon server
+        """
+        seg_meta.to_be_dropped = False
+        if seg_meta.seg.last_ia()[0] != self.addr.isd_as[0]:
+            # Found a neighboring ISD
+            self.coordinator.update_trust_list(seg_meta.seg.last_ia()[0])
+        if ext.trc is None:
+            # This PCB is to be used as "normal" path segment
+            logging.warning('Received an announcement without TRC. The corresponding '
+                            'PCB is dropped.')
+            seg_meta.to_be_dropped = True
+            return
+        else:
+            ext.p.currentlyRejected = False
+
+            ret = self.coordinator.handle_announcement(ext, announcing_isd)
+            if ret == ISDCoordinator.EARLY:
+                logging.info('Accepted an early announcement for ISD%i.'
+                             % ext.trc.isd)
+                return
+            elif ret == ISDCoordinator.REJECTED_CONFLICT:
+                logging.info('Rejected a final announcement because of '
+                             'an unresolved conflict.')
+                return
+            elif ret == ISDCoordinator.REJECTED_INVALID:
+                logging.info('Rejected a final announcement for ISD%i'
+                             ' from ISD%i because it is not valid.'
+                             % (ext.trc.isd, announcing_isd))
+            elif ret == ISDCoordinator.REJECTED_UNKNOWN:
+                logging.warning('Dropped an announcement because the'
+                                ' announcer ISD%i is unknown.' % announcing_isd)
+                seg_meta.to_be_dropped = True
+                return
+            elif ret == ISDCoordinator.ACCEPTED_FINAL:
+                logging.info('Accepted a final announcement for ISD%i.'
+                             % ext.trc.isd)
+                return
+            elif ret == ISDCoordinator.KNOWN_EARLY:
+                logging.info('Handled a known early announcement for ISD%i.'
+                             % ext.trc.isd)
+                return
+            elif ret == ISDCoordinator.REJECTED_VER_NONZERO:
+                logging.info('Received an announcement whose TRC'
+                             'did not have version 0.')
+                return
+            elif ret == ISDCoordinator.ACCEPTED_KNOWN:
+                logging.info('Handled an announcement for a known ISD')
+                return
+            elif ret == ISDCoordinator.REJECTED_TRC_INCONSISTENT:
+                logging.info('Rejected an announcement because the'
+                             'contained TRC is not consistent with itself.')
+                return
+            elif ret == ISDCoordinator.TOO_MANY_ANNOUNCEMENTS:
+                logging.info('Early announcement for ISD%i rejected,'
+                             'because it\'s announcer made too many announcements.' % ext.trc.isd)
+                return
+            else:
+                logging.warning('ISDCoordinator returned an unhandled announcement category.')
 
     def register_segments(self):
         self.register_core_segments()
@@ -179,7 +267,9 @@ class CoreBeaconServer(BeaconServer):
             new_pcb = self._terminate_pcb(pcb)
             if not new_pcb:
                 continue
+
             new_pcb.sign(self.signing_key)
+
             for svc_type in [PATH_SERVICE, SIBRA_SERVICE]:
                 try:
                     dst_meta = self.register_core_segment(new_pcb, svc_type)

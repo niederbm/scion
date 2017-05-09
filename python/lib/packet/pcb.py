@@ -27,9 +27,9 @@ import proto.pcb_capnp as P
 from lib.crypto.asymcrypto import sign
 from lib.crypto.symcrypto import crypto_hash
 from lib.defines import EXP_TIME_UNIT
-from lib.errors import SCIONSigVerError
+from lib.errors import SCIONSigVerError, SCIONTypeError
 from lib.flagtypes import PathSegFlags as PSF
-from lib.packet.asm_exts import RoutingPolicyExt
+from lib.packet.asm_exts import RoutingPolicyExt, ISDAnnouncementExt, AnnouncementRejectedExt
 from lib.packet.opaque_field import HopOpaqueField, InfoOpaqueField
 from lib.packet.packet_base import Cerealizable, SCIONPayloadBaseProto
 from lib.packet.path import SCIONPath
@@ -104,6 +104,13 @@ class ASMarking(Cerealizable):
         for ext in exts:
             if ext.EXT_TYPE == ASMExtType.ROUTING_POLICY:
                 p.exts.routingPolicy = ext.p
+            elif ext.EXT_TYPE == ASMExtType.ISD_ANNOUNCEMENT:
+                d = p.to_dict()
+                d['exts'].setdefault('isdAnnouncements', {})
+                d['exts']['isdAnnouncements'].append(ext.p)
+                p.from_dict(d)
+            elif ext.EXT_TYPE == ASMExtType.ANNOUNCEMENT_REJECTED:
+                p.exts.announcementRejected = ext.p
         return cls(p)
 
     def isd_as(self):  # pragma: no cover
@@ -121,12 +128,37 @@ class ASMarking(Cerealizable):
             return RoutingPolicyExt(self.p.exts.routingPolicy)
         return None
 
-    def add_ext(self, ext):  # pragma: no cover
+    def isd_announcement_ext(self, idx):
+        length = len(self.p.exts.isdAnnouncements)
+        if length > 0 and idx in range(0,length):
+            return ISDAnnouncementExt(self.p.exts.isdAnnouncements[idx])
+        return None
+
+    def isd_announcement_exts_iter(self):
+        for i in range(0, len(self.p.exts.isdAnnouncements)):
+            yield self.isd_announcement_ext(i)
+
+    def announcement_rejected_ext(self):
+        if self.p.exts.announcementRejected.set:
+            return AnnouncementRejectedExt(self.p.exts.announcementRejected)
+        return None
+
+    def add_ext(self, ext, type_):  # pragma: no cover
         """
         Appends a new ASMarking extension.
         """
         d = self.p.to_dict()
-        d.setdefault('exts', []).append(ext)
+        d.setdefault('exts', {})
+        if type_ == ASMExtType.ROUTING_POLICY:
+            d.setdefault['exts']['routingPolicy'] = ext.p
+        elif type_ == ASMExtType.ISD_ANNOUNCEMENT:
+            d['exts'].setdefault('isdAnnouncements', [])
+            d['exts']['isdAnnouncements'].append(ext.p)
+        elif type_ == ASMExtType.ANNOUNCEMENT_REJECTED:
+            d['exts']['announcementRejected'] = ext.p
+        else:
+            raise SCIONTypeError('Tried to add an ASMarking extension of'
+                                 'unknown type %i' % type_)
         self.p.from_dict(d)
 
     def sig_pack8(self):
@@ -147,6 +179,11 @@ class ASMarking(Cerealizable):
         rpe = self.routing_pol_ext()
         if rpe:
             b.append(rpe.sig_pack3())
+        for iae in self.isd_announcement_exts_iter():
+            b.append(iae.sig_pack4())
+        are = self.announcement_rejected_ext()
+        if are:
+            b.append(are.sig_pack1())
         # TODO(Sezer): handle other extensions here
         return b"".join(b)
 
@@ -218,7 +255,14 @@ class PathSegment(SCIONPayloadBaseProto):
         return b"".join(b)
 
     def sign(self, key, set_=True):  # pragma: no cover
+        readd_trcs = []
+        for ann_ext in self.asm(0).isd_announcement_exts_iter():
+            ann_ext.p.currentlyRejected = False
+            readd_trcs.append(ann_ext.remove_trc())
         sig = sign(self.sig_pack3(), key)
+        for ann_ext in self.asm(0).isd_announcement_exts_iter():
+            ann_ext.add_trc(readd_trcs.pop(0))
+
         if set_:
             self.p.asms[-1].sig = sig
         return sig

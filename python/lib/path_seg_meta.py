@@ -25,7 +25,7 @@ class PathSegMeta(object):  # pragma: no cover
     necessary metadata for a path segment.
     """
 
-    def __init__(self, seg, callback, meta=None, type_=None, params=None):
+    def __init__(self, seg, callback, meta=None, type_=None, params=None, to_be_dropped=False):
         self.trc_vers, self.cert_vers = seg.get_trcs_certs()
         self.missing_trcs = set()
         self.miss_trc_lock = threading.Lock()
@@ -37,6 +37,9 @@ class PathSegMeta(object):  # pragma: no cover
         self.type = type_
         self.params = params
         self.id = seg.get_hops_hash()
+        # This is set to True if the PCB contains an announcement from an unknown ISD
+        # and hence should be dropped
+        self.to_be_dropped = to_be_dropped
 
     def verifiable(self):
         with self.miss_cert_lock and self.miss_trc_lock:

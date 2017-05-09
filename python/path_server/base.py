@@ -400,12 +400,32 @@ class PathServer(SCIONElement, metaclass=ABCMeta):
             logging.debug("%s", pcb.sibra_ext)
         for asm in pcb.iter_asms():
             pol = asm.routing_pol_ext()
+            rej = asm.announcement_rejected_ext()
             if pol:
                 self.handle_routing_pol_ext(pol)
+            if rej:
+                self.handle_rejected_announcement(rej)
+        for ann_ext in pcb.asm(0).isd_announcement_exts_iter():
+            self.handle_isd_announcement_ext(ann_ext)
 
     def handle_routing_pol_ext(self, ext):
         # TODO(Sezer): Implement extension handling
         logging.debug("Routing policy extension: %s" % ext)
+
+    def handle_isd_announcement_ext(self, ext):
+        '''
+        Strips TRC from announcement extension if it is present.
+
+        :param ext: Announcement from which the TRC is stripped.
+        '''
+        if ext.trc is not None:
+            ext.trc = None
+            ext.p.trc = b''
+        else:
+            logging.error('Received announcement extension without TRC.')
+
+    def handle_rejected_announcement(self, ext):
+        logging.info('Received a PCB containing a rejected announcement.')
 
     def _dispatch_segment_record(self, type_, seg, **kwargs):
         # Check that segment does not contain a revoked interface.

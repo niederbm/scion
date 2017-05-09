@@ -76,6 +76,8 @@ from lib.defines import (
     SCION_ROUTER_PORT,
     SCIOND_API_SOCKDIR,
     TOPO_FILE,
+    ISD_COORDINATION_CONFIG,
+    NEW_ANNOUNCEMENTS_PATH,
 )
 from lib.errors import SCIONParseError
 from lib.path_store import PathPolicy
@@ -538,6 +540,7 @@ class TopoGenerator(object):
         self._write_as_topos()
         self._write_as_list()
         self._write_ifids()
+        self._write_coord_config()
         return self.topo_dicts, self.zookeepers, networks, prv_networks
 
     def _read_links(self):
@@ -581,6 +584,30 @@ class TopoGenerator(object):
         self._gen_srv_entries(topo_id, as_conf)
         self._gen_br_entries(topo_id)
         self._gen_zk_entries(topo_id, as_conf)
+
+    def _write_coord_config(self):
+        """
+        Write default configuration file for ISD coordination
+        """
+        for topo_id, as_topo in self.topo_dicts.items():
+            base = os.path.join(self.out_dir, topo_id.ISD(), topo_id.AS())
+            for elem in as_topo[SCION_SERVICE_NAMES[0]]:
+                if as_topo['Core']:
+                    curr_path = os.path.join(base, elem)
+                    ann_path = os.path.join(curr_path, NEW_ANNOUNCEMENTS_PATH)
+                    os.makedirs(ann_path)
+                    write_file(os.path.join(curr_path, ISD_COORDINATION_CONFIG),
+                               json.dumps(self._gen_coord_config(ann_path)))
+
+    def _gen_coord_config(self, ann_path):
+        config_dict = {
+            'polling_dir': ann_path,
+            'min_days': 7,
+            'max_days': 14,
+            'max_announcements': 5,
+            'conflict_resolution_policy': 0
+        }
+        return config_dict
 
     def _gen_srv_entries(self, topo_id, as_conf):
         for conf_key, def_num, nick, topo_key in (
@@ -680,6 +707,7 @@ class TopoGenerator(object):
     def _write_as_topos(self):
         for topo_id, as_topo, base in _srv_iter(
                 self.topo_dicts, self.out_dir, common=True):
+
             path = os.path.join(base, TOPO_FILE)
             contents_json = json.dumps(self.topo_dicts[topo_id],
                                        default=_json_default, indent=2)

@@ -87,3 +87,7 @@ class SCIONVerificationError(SCIONBaseError):
 
 class SCIONPathPolicyViolated(SCIONBaseError):
     """Path policy violated error"""
+
+
+class SCIONValueError(SCIONBaseError):
+    """SCION invalid value error"""
