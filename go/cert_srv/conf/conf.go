@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/scionproto/scion/go/cert_srv/cert"
+	"github.com/scionproto/scion/go/cert_srv/trc"
 	"github.com/scionproto/scion/go/lib/as_conf"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl"
@@ -41,14 +43,15 @@ const (
 	// ReissReqRate is the default interval between two consecutive reissue requests.
 	ReissReqRate = 10 * time.Second
 
-	ErrorAddr      = "Unable to load addresses"
-	ErrorIssCert   = "Unable to load issuer certificate"
-	ErrorKeyConf   = "Unable to load KeyConf"
-	ErrorConfNil   = "Unable to reload conf from nil value"
-	ErrorStore     = "Unable to load TrustStore"
-	ErrorTopo      = "Unable to load topology"
-	ErrorTrustDB   = "Unable to load trust DB"
-	ErrorCustomers = "Unable to load Customers"
+	ErrorAddr         = "Unable to load addresses"
+	ErrorIssCert      = "Unable to load issuer certificate"
+	ErrorKeyConf      = "Unable to load KeyConf"
+	ErrorConfNil      = "Unable to reload conf from nil value"
+	ErrorStore        = "Unable to load TrustStore"
+	ErrorTopo         = "Unable to load topology"
+	ErrorTrustDB      = "Unable to load trust DB"
+	ErrorCustomers    = "Unable to load Customers"
+	ErrorXSigPolicies = "Unable to load cross-signing policies"
 )
 
 type Conf struct {
@@ -96,6 +99,8 @@ type Conf struct {
 	ReissRate time.Duration
 	// RequestID is used to generate unique request IDs for the messenger
 	RequestID messenger.Counter
+	// XSigPolicies internally stores policy checking functions
+	xSigPolicies *XSigPolicies
 }
 
 // Load initializes the configuration by loading it from confDir.
@@ -135,6 +140,9 @@ func Load(id string, confDir string, stateDir string) (*Conf, error) {
 		}
 		if err = c.checkIssCert(); err != nil {
 			return nil, err
+		}
+		if c.xSigPolicies, err = c.loadXSigPolicies(); err != nil {
+			return nil, common.NewBasicError(ErrorXSigPolicies, err)
 		}
 	}
 	return c, nil
@@ -177,6 +185,9 @@ func ReloadConf(oldConf *Conf) (*Conf, error) {
 	if c.Topo.Core {
 		if err := c.checkIssCert(); err != nil {
 			return nil, err
+		}
+		if c.xSigPolicies, err = c.loadXSigPolicies(); err != nil {
+			return nil, common.NewBasicError(ErrorXSigPolicies, err)
 		}
 	}
 	return c, nil
@@ -358,4 +369,9 @@ func Get() *Conf {
 // Set updates the current configuration.
 func Set(c *Conf) {
 	conf.Store(c)
+}
+
+// Checks TRC for cross-signing viability
+func (c *Conf) CheckTRCForXSig(t *trc.TRC) bool {
+	return c.xSigPolicies.check(t)
 }
